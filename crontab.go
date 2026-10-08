@@ -460,3 +460,35 @@ func CronShellPart(cmd string) string {
 	}
 	return b.String()
 }
+
+// CronStdin returns what cron feeds the command on stdin: the text after the
+// first unescaped '%', with every further unescaped '%' turned into a newline.
+// has is false when the command has no stdin part.
+func CronStdin(cmd string) (stdin string, has bool) {
+	var b strings.Builder
+	for i := 0; i < len(cmd); i++ {
+		c := cmd[i]
+		if c == '\\' && i+1 < len(cmd) && cmd[i+1] == '%' {
+			if has {
+				b.WriteByte('%')
+			}
+			i++
+			continue
+		}
+		if c == '%' {
+			if has {
+				b.WriteByte('\n')
+			}
+			has = true
+			continue
+		}
+		if has {
+			b.WriteByte(c)
+		}
+	}
+	s := b.String()
+	if has && !strings.HasSuffix(s, "\n") {
+		s += "\n"
+	}
+	return s, has
+}

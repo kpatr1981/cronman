@@ -20,6 +20,7 @@ commented-out) with a check status, and lets you:
 | `e` | edit the schedule (validated, shows the next run times) |
 | `c` | edit the whole command |
 | `p` | change only the script/executable path |
+| `x` | run the job now, as cron would (asks first; see below) |
 | `enter` | details: every file the job uses, problems, numbered fixes |
 | `1-9` (details) | apply a proposed fix (asks first) |
 | `w` | save (shows a diff, refuses if the crontab changed meanwhile, backs up to `~/.cronman_backups/`) |
@@ -46,6 +47,22 @@ are looked through. Paths built from `$(...)` or unknown variables are reported 
 Fixes are the least invasive change: `chmod u+x` when the user owns the file (run directly),
 otherwise `sudo chmod g+x` / `o+x` or `chown` (run through `ssh -t … sudo`, so you type
 your sudo password in the terminal).
+
+### Running a job now
+
+`x` (in the list or the details screen) shows the command and asks how to run it, as the
+crontab's user and with **cron's** environment rather than your login shell's: environment
+cleared, only the crontab's `NAME=value` lines plus `HOME`, `LOGNAME`, `USER`, `SHELL`
+and `PATH=/usr/bin:/bin` (unless set in the crontab), run with `$SHELL -c`, working directory `$HOME`,
+text after an unescaped `%` fed on stdin, stdout and stderr merged into a pipe. That is the
+quickest way to reproduce a "works in my shell, fails in cron" problem.
+
+* `y` runs it in the foreground: output streams live, then the exit status and run time
+  are shown. `ctrl-c` stops the job (cronman keeps running).
+* `b` starts it detached with `nohup` and returns at once; output goes to
+  `~/.cronman_runs/job<N>-<date>.log` on the host.
+
+It runs what is on screen, so unsaved edits and disabled jobs can be tried before saving.
 
 ### Commented-out jobs vs comments
 

@@ -203,3 +203,13 @@ func TestCronShellPart(t *testing.T) {
 		t.Error("plain")
 	}
 }
+
+func TestCronStdin(t *testing.T) {
+	if _, has := CronStdin(`date +\%Y >> /tmp/x`); has {
+		t.Fatal("no stdin part expected")
+	}
+	got, has := CronStdin(`mail -s hi root%line one%line \%two`)
+	if !has || got != "line one\nline %two\n" {
+		t.Fatalf("got %q %v", got, has)
+	}
+}

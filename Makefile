@@ -1,7 +1,7 @@
 # cronman — Author: Konstantinos Patronas <kpatronas@gmail.com>
 
 PLATFORMS := linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64
-VERSION   ?= 1.0.0
+VERSION   ?= 1.1.0
 LDFLAGS   := -s -w -X main.version=$(VERSION)
 
 build:

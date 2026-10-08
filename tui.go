@@ -210,7 +210,7 @@ func keybar(w int, items [][2]string) []string {
 
 var mainKeys = [][2]string{
 	{"↑↓", "move"}, {"space", "enable/disable"}, {"e", "edit schedule"}, {"c", "edit command"},
-	{"p", "change script path"}, {"enter", "details & fixes"}, {"w", "save"}, {"d", "diff"},
+	{"p", "change script path"}, {"x", "run now"}, {"enter", "details & fixes"}, {"w", "save"}, {"d", "diff"},
 	{"r", "reload"}, {"R", "re-check"}, {"?", "help"}, {"q", "quit"},
 }
 
@@ -433,6 +433,8 @@ func (a *app) loop() {
 			if a.current() != nil {
 				a.details()
 			}
+		case k.Rune == 'x':
+			a.runNow(nil)
 		case k.Rune == 'w':
 			a.save()
 		case k.Rune == 'd':
@@ -783,6 +785,7 @@ func (a *app) help() {
 		"   " + key("e") + "               edit the schedule (validated; shows the next run times)",
 		"   " + key("c") + "               edit the whole command",
 		"   " + key("p") + "               change only the script/executable path in the command",
+		"   " + key("x") + "               run the job now, as cron would (asks first; foreground or background)",
 		"   " + key("enter") + "           details: every file the job uses, problems and proposed fixes",
 		"   " + key("w") + "               save to the host (shows a diff, backs up the old crontab first)",
 		"   " + key("d") + "               show pending changes",
@@ -791,7 +794,7 @@ func (a *app) help() {
 		"",
 		bold(" Details screen"),
 		"   " + key("1-9") + "             apply proposed fix N (asks first; sudo fixes prompt for your password)",
-		"   " + key("space e c p") + "     same as in the list     " + key("esc  q  ←") + "  back",
+		"   " + key("space e c p x") + "   same as in the list     " + key("esc  q  ←") + "  back",
 		"",
 		bold(" Editing a value"),
 		"   " + key("enter") + " accept   " + key("esc") + " cancel   " + key("← → home end") + " move   " + key("ctrl-u") + " clear   " + key("ctrl-w") + " delete word",
@@ -801,6 +804,11 @@ func (a *app) help() {
 		"   " + yellow("WARN") + " will probably run but something is off (e.g. CRLF line endings, no #! line)",
 		"   " + red("FAIL") + " cron will fail to run it (missing file, no execute/read permission, bad interpreter…)",
 		"   " + dim("?") + "    could not be checked (path built from variables or $(...))",
+		"",
+		bold(" Running a job now (x)"),
+		"   Runs as " + a.info.User + " with cron's environment: env cleared, crontab variables, $SHELL -c,",
+		"   working directory $HOME, text after % as stdin. " + key("y") + " watch the output live (ctrl-c stops it),",
+		"   " + key("b") + " start it detached with nohup; output goes to ~/.cronman_runs/ on the host.",
 		"",
 		dim(" Nothing is written to the host until you press w and confirm."),
 		"",
@@ -929,7 +937,7 @@ func lastSpace(r []rune) int {
 
 var detailKeys = [][2]string{
 	{"1-9", "apply fix"}, {"space", "enable/disable"}, {"e", "schedule"}, {"c", "command"},
-	{"p", "path"}, {"R", "re-check"}, {"↑↓", "scroll"}, {"esc/q", "back"},
+	{"p", "path"}, {"x", "run now"}, {"R", "re-check"}, {"↑↓", "scroll"}, {"esc/q", "back"},
 }
 
 func (a *app) details() {
@@ -984,6 +992,8 @@ func (a *app) details() {
 			a.editCommand(base)
 		case k.Rune == 'p' || k.Rune == 'f':
 			a.editPath(base)
+		case k.Rune == 'x':
+			a.runNow(base)
 		case k.Rune == 'R':
 			a.check([]*Line{l})
 			a.status = "Re-checked."
