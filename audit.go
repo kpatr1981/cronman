@@ -1,3 +1,5 @@
+// cronman — Author: Konstantinos Patronas <kpatronas@gmail.com>
+
 package main
 
 import (

@@ -1,4 +1,7 @@
 // cronman — manage and audit cron jobs on remote hosts over SSH.
+//
+// Author: Konstantinos Patronas <kpatronas@gmail.com>
+// https://github.com/kpatr1981/cronman
 package main
 
 import (
@@ -11,6 +14,11 @@ import (
 )
 
 var version = "1.0.0"
+
+const (
+	author  = "Konstantinos Patronas <kpatronas@gmail.com>"
+	repoURL = "https://github.com/kpatr1981/cronman"
+)
 
 func stderr() io.Writer { return os.Stderr }
 
@@ -34,9 +42,12 @@ Interactive keys (also shown on screen):
 Options:
 `, version)
 	flag.PrintDefaults()
-	fmt.Fprint(os.Stderr, `
+	fmt.Fprintf(os.Stderr, `
 Exit status (--audit): 0 no failing jobs, 1 failing jobs found, 2 error.
-`)
+
+Author: %s
+%s
+`, author, repoURL)
 }
 
 func main() {
@@ -73,6 +84,8 @@ func main() {
 
 	if *showVer {
 		fmt.Println("cronman", version)
+		fmt.Println("Author:", author)
+		fmt.Println(repoURL)
 		return
 	}
 	initColor()

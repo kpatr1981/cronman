@@ -68,6 +68,21 @@ each job **as the user it runs as**. Also reported:
 Only problems are printed (`-v` lists everything). `--fix` offers to run each fix.
 Exit status: 0 = no failing jobs, 1 = failing jobs, 2 = error.
 
+## Authentication
+
+cronman does not implement SSH itself. It runs your system `ssh`, so every login method
+`ssh` supports works:
+
+* **SSH keys:** default keys, `-i ~/.ssh/id_ed25519`, ssh-agent, hardware keys
+* **passwords and key passphrases:** prompted by `ssh` in your terminal
+* **`~/.ssh/config`:** host aliases, `User`, `Port`, `ProxyJump`, `IdentityFile` all apply
+  (`cronman web1` works if `web1` is a Host entry)
+* `-p PORT`, `-i KEY`, `-J JUMPHOST` and `-o Option=value` are passed straight to `ssh`
+
+On macOS/Linux the connection is opened once and reused (`ControlMaster`), so a password
+or passphrase is asked for only once per run. The sudo password (audit mode, sudo fixes)
+is separate and is asked for on the remote host.
+
 ## Platforms
 
 The client runs on **macOS, Linux and Windows** (uses the system `ssh`; Windows 10+
@@ -77,10 +92,71 @@ tools are needed there — nothing is installed.
 On Windows, OpenSSH has no connection sharing, so use key-based auth (or ssh-agent) to
 avoid a password prompt per operation. On macOS/Linux one connection is reused.
 
-## Build
+## Install
 
+Download a prebuilt binary from the
+[Releases page](https://github.com/kpatr1981/cronman/releases/latest).
+They are static, single-file executables with no dependencies.
+
+| OS | CPU | file |
+|---|---|---|
+| Linux | x86-64 | `cronman-linux-amd64` |
+| Linux | ARM64 (Raspberry Pi 4/5, Graviton) | `cronman-linux-arm64` |
+| macOS | Intel | `cronman-darwin-amd64` |
+| macOS | Apple Silicon | `cronman-darwin-arm64` |
+| Windows | x86-64 | `cronman-windows-amd64.exe` |
+| Windows | ARM64 | `cronman-windows-arm64.exe` |
+
+Linux / macOS:
+
+```sh
+curl -LO https://github.com/kpatr1981/cronman/releases/latest/download/cronman-linux-amd64
+chmod +x cronman-linux-amd64
+sudo mv cronman-linux-amd64 /usr/local/bin/cronman
+cronman --version
 ```
-go build -o cronman .
-make release        # dist/ binaries for linux, macOS, windows (amd64/arm64)
-go test ./...
+
+Verify the download against `SHA256SUMS` from the same release:
+
+```sh
+shasum -a 256 -c SHA256SUMS --ignore-missing
 ```
+
+On macOS, a binary downloaded with a browser is quarantined by Gatekeeper; clear it with
+`xattr -d com.apple.quarantine /usr/local/bin/cronman` (not needed when using `curl`).
+
+## Build from source
+
+You need [Go](https://go.dev/dl/) 1.26 or newer and `git`. There is no cgo, so no C
+compiler is needed.
+
+```sh
+git clone https://github.com/kpatr1981/cronman.git
+cd cronman
+go build -o cronman .          # or: make build
+./cronman --version
+```
+
+Or install straight into `$(go env GOPATH)/bin`:
+
+```sh
+go install github.com/kpatr1981/cronman@latest
+```
+
+Other targets:
+
+```sh
+make test                      # go vet + unit tests
+make release                   # dist/ binaries for linux, macOS, windows (amd64/arm64) + SHA256SUMS
+make release VERSION=1.1.0     # stamp a version into the binaries
+```
+
+Cross-compiling one target by hand:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="-s -w" -o cronman-linux-arm64 .
+```
+
+## Author
+
+Konstantinos Patronas — <kpatronas@gmail.com>

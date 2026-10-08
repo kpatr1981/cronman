@@ -1,3 +1,5 @@
+// cronman — Author: Konstantinos Patronas <kpatronas@gmail.com>
+
 package main
 
 import (
@@ -801,6 +803,8 @@ func (a *app) help() {
 		"   " + dim("?") + "    could not be checked (path built from variables or $(...))",
 		"",
 		dim(" Nothing is written to the host until you press w and confirm."),
+		"",
+		dim(" cronman " + version + " by " + author + " — " + repoURL),
 		"",
 		" press any key to return",
 	}

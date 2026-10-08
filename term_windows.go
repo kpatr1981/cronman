@@ -1,5 +1,7 @@
 //go:build windows
 
+// cronman — Author: Konstantinos Patronas <kpatronas@gmail.com>
+
 package main
 
 import (

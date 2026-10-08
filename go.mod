@@ -1,4 +1,4 @@
-module cronman
+module github.com/kpatr1981/cronman
 
 go 1.26.0
 
