@@ -141,3 +141,19 @@ func TestPermFixesForOtherOwner(t *testing.T) {
 		t.Errorf("%+v", fs)
 	}
 }
+
+// On a noexec mount the x test always fails; only the noexec issue should be
+// reported, not a bogus "not executable" with a chmod fix.
+func TestNoexecMount(t *testing.T) {
+	ctx := UserCtx{User: "alice", Groups: []string{"alice"}}
+	res := CheckRes{"exists": "1", "st": "root:root:755", "r": "1", "noexec": "1", "shebang": "1", "interp": "/bin/sh", "interp_ok": "1"}
+	tr := Analyze(Target{Kind: TExec, Role: "command", Path: "/mnt/noexec/s.sh"}, res, ctx)
+	if len(tr.Issues) != 1 || !strings.Contains(tr.Issues[0].Msg, "mounted noexec") {
+		t.Errorf("want only the noexec issue, got %+v", tr.Issues)
+	}
+	res["r"] = "0"
+	tr = Analyze(Target{Kind: TExec, Role: "command", Path: "/mnt/noexec/s.sh"}, res, ctx)
+	if len(tr.Issues) != 2 || !strings.Contains(tr.Issues[0].Msg, "not readable") {
+		t.Errorf("want not-readable + noexec, got %+v", tr.Issues)
+	}
+}

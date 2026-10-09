@@ -87,8 +87,13 @@ run_checks() {
       fi
       if command -v findmnt >/dev/null 2>&1; then
         o=$(findmnt -n -o OPTIONS -T "$p" 2>/dev/null)
-        case ",$o," in *,noexec,*) emit noexec=1;; esac
+      elif [ -r /proc/mounts ]; then
+        # no findmnt (Alpine/busybox): options of the longest mount point containing $p
+        rp=$(readlink -f "$p" 2>/dev/null) || rp=$p
+        o=$(awk -v p="$rp" '{ m = $2; pre = (m == "/") ? "/" : m "/"
+          if ((p == m || index(p, pre) == 1) && length(m) >= bl) { bl = length(m); bo = $4 } } END { print bo }' /proc/mounts)
       fi
+      case ",$o," in *,noexec,*) emit noexec=1;; esac
     else
       emit exists=0
       d=$(dirname "$p")
@@ -378,7 +383,13 @@ func Analyze(t Target, res CheckRes, ctx UserCtx) TargetReport {
 			break
 		}
 		script := res["shebang"] == "1"
+		noexec := res["noexec"] == "1"
 		switch {
+		case noexec && res["r"] != "1":
+			// The x test always fails on a noexec mount, so only readability matters
+			// (for the run-through-the-interpreter workaround below).
+			add(SevFail, fmt.Sprintf("%s is not readable by %s (%s)", p, ctx.User, oi), permFixes(p, oi, "r", ctx, false)...)
+		case noexec:
 		case res["x"] != "1" && res["r"] != "1":
 			add(SevFail, fmt.Sprintf("%s is neither executable nor readable by %s (%s)", p, ctx.User, oi), permFixes(p, oi, "rx", ctx, false)...)
 		case res["x"] != "1":
@@ -386,7 +397,7 @@ func Analyze(t Target, res CheckRes, ctx UserCtx) TargetReport {
 		case res["r"] != "1" && res["elf"] != "1":
 			add(SevFail, fmt.Sprintf("%s is executable but not readable by %s; a script must be readable for its interpreter (%s)", p, ctx.User, oi), permFixes(p, oi, "r", ctx, false)...)
 		}
-		if res["noexec"] == "1" {
+		if noexec {
 			add(SevFail, p+" is on a filesystem mounted noexec; it cannot be executed directly",
 				Fix{Desc: "run it through its interpreter instead, e.g. /bin/sh " + p})
 		}

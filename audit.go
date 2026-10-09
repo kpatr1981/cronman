@@ -81,19 +81,23 @@ printf '@@ID %s %s\n' "$(id -un)" "$(id -u)"
 printf '@@OS %s\n' "$(uname -s)"
 [ -f "$R/etc/debian_version" ] && echo "@@DEBIAN"
 if [ "$(uname -s)" != Darwin ] && command -v pgrep >/dev/null 2>&1; then
-  if pgrep -x cron >/dev/null 2>&1 || pgrep -x crond >/dev/null 2>&1 || pgrep -x cronie >/dev/null 2>&1; then echo "@@DAEMON running"; else echo "@@DAEMON not-running"; fi
+  if pgrep -x cron >/dev/null 2>&1 || pgrep -x crond >/dev/null 2>&1 || pgrep -x cronie >/dev/null 2>&1 || pidof cron crond >/dev/null 2>&1; then echo "@@DAEMON running"; else echo "@@DAEMON not-running"; fi
 fi
 st() { stat -c '%U:%G:%a' "$1" 2>/dev/null || stat -f '%Su:%Sg:%Lp' "$1" 2>/dev/null; }
 dumpf() { printf '@@FILE\t%s\t%s\t%s\n' "$1" "$(st "$2")" "$2"; cat "$2"; printf '\n@@ENDFILE\n'; }
 for d in "$R/var/spool/cron/crontabs" "$R/var/spool/cron/tabs" "$R/var/spool/cron" "$R/var/cron/tabs" "$R/usr/lib/cron/tabs"; do
   [ -d "$d" ] || continue
-  if [ ! -r "$d" ] || [ ! -x "$d" ]; then printf '@@UNREADABLE\t%s\n' "$d"; continue; fi
+  if [ ! -r "$d" ] || [ ! -x "$d" ]; then printf '@@UNREADABLE\t%s\n' "$d"; [ -n "$ownd" ] || ownd=$d; continue; fi
   for f in "$d"/*; do
     [ -f "$f" ] || continue
-    case ${f##*/} in .*|tmp.*|*.bak|*~) continue;; esac
+    case ${f##*/} in .*|tmp.*|*.bak|*~|cron.update|cron.*.[0-9]*) continue;; esac  # busybox crond: reload trigger, job output (cron.USER.PID)
     if [ -r "$f" ]; then dumpf user "$f"; else printf '@@UNREADABLE\t%s\n' "$f"; fi
   done
 done
+# Without root the spool is unreadable, but the login user can still list their own crontab.
+if [ -z "$R" ] && [ -n "$ownd" ] && t=$(crontab -l 2>/dev/null); then
+  printf '@@FILE\tuser\t?:?:?\t%s\n%s\n\n@@ENDFILE\n' "$ownd/$(id -un)" "$t"
+fi
 if [ -f "$R/etc/crontab" ]; then
   if [ -r "$R/etc/crontab" ]; then dumpf system "$R/etc/crontab"; else printf '@@UNREADABLE\t%s\n' "$R/etc/crontab"; fi
 fi
@@ -216,7 +220,9 @@ func (s *auditState) analyzeFiles() {
 				af.issues = append(af.issues, Issue{SevFail, "user '" + af.user + "' does not exist; cron ignores this crontab (orphan)",
 					[]Fix{{Desc: "remove the orphaned crontab", Cmd: "rm " + shq(af.path), Sudo: true}}})
 			}
-			if af.st.owner != "?" && af.st.owner != af.user {
+			// Debian's cron refuses a crontab not owned by its user; cronie and busybox
+			// keep them owned by root.
+			if af.st.owner != "?" && af.st.owner != af.user && (s.debian || af.st.owner != "root") {
 				af.issues = append(af.issues, Issue{SevFail, fmt.Sprintf("file is owned by %s, not %s; cron refuses it (WRONG FILE OWNER)", af.st.owner, af.user),
 					[]Fix{{Desc: "fix ownership", Cmd: "chown " + shq(af.user) + " " + shq(af.path), Sudo: true}}})
 			}
@@ -522,7 +528,11 @@ func (s *auditState) printIssue(indent string, is Issue, pending *[]Fix) {
 		} else if f.EditFrom != "" {
 			fmt.Printf("%s    %s %s\n", indent, dim(lead), "edit the crontab: replace "+f.EditFrom+" with "+f.EditTo)
 		} else {
-			fmt.Printf("%s    %s %s\n", indent, dim(lead), f.Desc)
+			desc := f.Desc
+			if i > 0 {
+				desc = strings.TrimPrefix(desc, "or ") // the lead already says "or:"
+			}
+			fmt.Printf("%s    %s %s\n", indent, dim(lead), desc)
 		}
 	}
 }
