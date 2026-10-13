@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 )
 
 // Multi-host mode: edit one job on several hosts at once. Only jobs whose
@@ -26,7 +27,7 @@ type skippedPath struct {
 
 // jobPath returns the script/executable a job runs, as written in the command.
 func jobPath(ct *Crontab, l *Line, home string) string {
-	mt := MainTarget(ExtractTargets(l.Command, ct.EnvAt(l, home)).Targets)
+	mt := MainTarget(ExtractTargets(innerCommand(l.Command), ct.EnvAt(l, home)).Targets)
 	if mt == nil {
 		return ""
 	}
@@ -99,7 +100,7 @@ func matchJobs(cts []*Crontab, homes []string) ([]*mrow, []skippedPath) {
 		return amb
 	}
 
-	byCmd := func(i int, l *Line) string { return oneLine(l.Command) }
+	byCmd := func(i int, l *Line) string { return oneLine(innerCommand(l.Command)) }
 	pair(group(byCmd), byCmd, true)
 	byPath := func(i int, l *Line) string { return jobPath(cts[i], l, homes[i]) }
 	skipped := pair(group(byPath), byPath, false)
@@ -146,6 +147,10 @@ func runMulti(runners []Runner) error {
 	}
 	fmt.Fprintf(stderr(), "Checking %s on %d hosts…\n", plural(len(m.rows), "shared job"), len(m.hosts))
 	m.checkAll()
+	fmt.Fprintf(stderr(), "Reading the cron logs…\n")
+	for _, h := range m.hosts {
+		h.loadHistory()
+	}
 	scr, err := openScreen()
 	if err != nil {
 		return err
@@ -289,7 +294,7 @@ func (r *mrow) modified() bool {
 
 var multiKeys = [][2]string{
 	{"↑↓", "move"}, {"space", "enable/disable"}, {"e", "edit schedule"}, {"c", "edit command"},
-	{"p", "change script path"}, {"D", "delete"}, {"w", "save"}, {"d", "diff"},
+	{"p", "change script path"}, {"D", "delete"}, {"S", "record result"}, {"w", "save"}, {"d", "diff"},
 	{"r", "reload"}, {"R", "re-check"}, {"?", "help"}, {"q", "quit"},
 }
 
@@ -335,7 +340,7 @@ func (m *multiApp) render(promptLines []string) []string {
 			schedW = max(schedW, min(len(l.Schedule), 24))
 		}
 	}
-	lines = append(lines, dim(fmt.Sprintf("   %3s  %-5s %-5s %-*s %s", "#", "STATE", "CHECK", schedW, "SCHEDULE", "COMMAND")))
+	lines = append(lines, dim(fmt.Sprintf("   %3s  %-5s %-5s %-12s %-*s %s", "#", "STATE", "CHECK", "LAST", schedW, "SCHEDULE", "COMMAND")))
 	if m.sel < m.off {
 		m.off = m.sel
 	}
@@ -353,14 +358,14 @@ func (m *multiApp) render(promptLines []string) []string {
 		if j == m.sel {
 			mark = cyan("▶ ")
 		}
-		pre := fmt.Sprintf("%s%3d  %s   %s ", mark, j+1, r.state(), padRight(sevLabel(m.rowSev(r)), 5))
+		pre := fmt.Sprintf("%s%3d  %s   %s %s ", mark, j+1, r.state(), padRight(sevLabel(m.rowSev(r)), 5), padRight(m.lastCell(r), 12))
 		s, same := r.common(func(l *Line) string { return l.Schedule })
 		if !same {
 			s = "(differs)"
 		}
 		sched := fmt.Sprintf("%-*s ", schedW, fit(s, schedW))
 		rest := w - visibleLen(pre) - len(sched) - 1
-		cmd, same := r.common(func(l *Line) string { return l.Command })
+		cmd, same := r.common(func(l *Line) string { return innerCommand(l.Command) })
 		if !same {
 			cmd = r.path + " (arguments differ)"
 		}
@@ -425,8 +430,8 @@ func (m *multiApp) hostPanel(w int) []string {
 		if l.Deleted {
 			state = red("DEL")
 		}
-		line := fmt.Sprintf(" %-*s %s %s %s  %s", nameW, fit(hostOf(h.r.Label()), nameW), state,
-			padRight(sevLabel(h.rep[l].Sev()), 5), l.Schedule, l.Command)
+		line := fmt.Sprintf(" %-*s %s %s %s %s  %s", nameW, fit(hostOf(h.r.Label()), nameW), state,
+			padRight(sevLabel(h.rep[l].Sev()), 5), padRight(h.hist[l].lastCell(h.now(), h.logOK()), 12), l.Schedule, displayCmd(l))
 		line = fit(line, w)
 		if l.Modified {
 			line = yellow(line)
@@ -476,6 +481,8 @@ func (m *multiApp) loop() {
 			m.editPath()
 		case k.Rune == 'D':
 			m.deleteRow()
+		case k.Rune == 'S':
+			m.toggleRecording()
 		case k.Rune == 'x' || k.Name == "enter":
 			m.status = "Run-now and fixes work on one host: run cronman with just that host."
 		case k.Rune == 'w':
@@ -488,7 +495,10 @@ func (m *multiApp) loop() {
 			m.status = "Re-checking…"
 			m.ui.scr.draw(m.render(nil), -1, -1)
 			m.checkAll()
-			m.status = "Checks refreshed."
+			for _, h := range m.hosts {
+				h.loadHistory()
+			}
+			m.status = "Checks and run history refreshed."
 		case k.Rune == '?' || k.Rune == 'h':
 			m.help()
 		case k.Rune == 'q' || k.Name == "ctrl-c" || k.Name == "esc":
@@ -595,7 +605,7 @@ func (m *multiApp) editCommand() {
 	if r == nil {
 		return
 	}
-	cur, same := r.common(func(l *Line) string { return l.Command })
+	cur, same := r.common(func(l *Line) string { return innerCommand(l.Command) })
 	if !same {
 		m.status = yellow("The arguments differ between hosts, so the whole command can't be set at once. Use p to change the path, or edit each host on its own.")
 		return
@@ -606,12 +616,26 @@ func (m *multiApp) editCommand() {
 		}
 		return ""
 	})
-	if !ok || strings.TrimSpace(v) == cur {
+	v = strings.TrimSpace(v)
+	if !ok || v == cur {
 		m.status = "Command unchanged."
 		return
 	}
-	for _, l := range r.lines {
-		_ = l.SetCommand(v)
+	// Hosts that record the result keep their wrapper.
+	cmds := make([]string, len(r.lines))
+	for i, l := range r.lines {
+		cmds[i] = v
+		if _, id, wrapped := UnwrapStatus(l.Command); wrapped {
+			w, err := WrapStatus(v, id)
+			if err != nil {
+				m.status = red("Result recording on " + hostOf(m.hosts[i].r.Label()) + ": " + err.Error() + "; nothing changed (S turns it off).")
+				return
+			}
+			cmds[i] = w
+		}
+	}
+	for i, l := range r.lines {
+		_ = l.SetCommand(cmds[i])
 	}
 	m.recheck(r, "Command")
 }
@@ -686,6 +710,7 @@ func (m *multiApp) reload() {
 		}
 		h.info = ri
 		h.setContent(content)
+		h.loadHistory()
 	}
 	m.match()
 	m.checkAll()
@@ -842,10 +867,12 @@ func (m *multiApp) help() {
 		"   " + key("c") + "               edit the whole command (only when it is the same on every host)",
 		"   " + key("p") + "               change the script/executable path on every host",
 		"   " + key("D") + "               delete the job on every host (shows each host's line, asks first; D again keeps it)",
+		"   " + key("S") + "               record each run's exit status on every host (S again removes it)",
 		"   " + key("w") + "               save: one diff for all hosts, then each host is backed up and written",
 		"   " + key("d") + "               show pending changes     " + key("r") + "  reload all     " + key("R") + "  re-check",
 		"   " + key("q  esc") + "          quit (asks if there are unsaved changes)",
 		"",
+		" LAST shows the worst host: " + red("✗ 2/3") + " last run failed on 2 of 3 hosts, " + yellow("MISSED 1/3") + " a scheduled run did not start.",
 		" STATE " + yellow("MIX") + " means the job is on for some hosts and off for others; " + red("DEL") + " is deleted on save.",
 		" A host whose crontab changed since it was loaded is skipped on save; the others are saved.",
 	}
@@ -858,4 +885,91 @@ func (m *multiApp) help() {
 	lines = append(lines, "", " press any key to return")
 	m.ui.scr.draw(lines, -1, -1)
 	m.ui.scr.keys.Read()
+}
+
+// lastCell sums up the last run on every host, worst first.
+func (m *multiApp) lastCell(r *mrow) string {
+	n := len(r.lines)
+	failed, missed, running := 0, 0, 0
+	var age time.Duration // of the oldest last run, each host on its own clock
+	allOK, allRan := true, true
+	for i, l := range r.lines {
+		h := m.hosts[i]
+		jh := h.hist[l]
+		if jh == nil {
+			allOK, allRan = false, false
+			continue
+		}
+		if len(jh.Running) > 0 {
+			running++
+		}
+		if jh.MissedLast() {
+			missed++
+		}
+		last := jh.Last()
+		if last == nil {
+			allOK, allRan = false, false
+			continue
+		}
+		if last.Result == RunFailed {
+			failed++
+		}
+		if last.Result != RunOK {
+			allOK = false
+		}
+		age = max(age, h.now().Sub(last.Start))
+	}
+	now := time.Now()
+	switch {
+	case failed > 0:
+		return red(fmt.Sprintf("✗ %d/%d", failed, n))
+	case missed > 0:
+		return yellow(fmt.Sprintf("MISSED %d/%d", missed, n))
+	case running > 0:
+		return cyan(fmt.Sprintf("▶ %d/%d", running, n))
+	case allOK:
+		return green("✓ " + ago(now.Add(-age), now))
+	case allRan:
+		return "• " + ago(now.Add(-age), now)
+	}
+	return dim("?")
+}
+
+// toggleRecording turns result recording on for every host of the row, or off
+// when every host has it already.
+func (m *multiApp) toggleRecording() {
+	r := m.live()
+	if r == nil {
+		return
+	}
+	all := true
+	for _, l := range r.lines {
+		_, _, w := UnwrapStatus(l.Command)
+		all = all && w
+	}
+	if all {
+		for _, l := range r.lines {
+			_ = l.SetCommand(innerCommand(l.Command))
+		}
+		m.status = fmt.Sprintf("Job %d: result recording removed on all hosts (press w to save).", m.sel+1)
+	} else {
+		cmds := make([]string, len(r.lines))
+		for i, l := range r.lines {
+			w, err := WrapStatus(l.Command, randHex(4))
+			if err != nil {
+				m.status = red("Can't record the result on " + hostOf(m.hosts[i].r.Label()) + ": " + err.Error())
+				return
+			}
+			cmds[i] = w
+		}
+		for i, l := range r.lines {
+			if cmds[i] != l.Command {
+				_ = l.SetCommand(cmds[i])
+			}
+		}
+		m.status = fmt.Sprintf("Job %d will record its exit status on all hosts (press w to save).", m.sel+1)
+	}
+	for _, h := range m.hosts {
+		h.refreshHist()
+	}
 }

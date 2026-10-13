@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type auditOpts struct {
@@ -65,6 +66,7 @@ type auditState struct {
 	unread   []string
 	groups   map[string][]string
 	noSwitch bool
+	runsNote string // where the run history came from
 }
 
 func (s *auditState) run(script string) (string, string, error) {
@@ -266,7 +268,7 @@ func (s *auditState) analyzeFiles() {
 				}
 			} else {
 				env := af.ct.EnvAt(l, home)
-				aj.ext = ExtractTargets(l.Command, env)
+				aj.ext = ExtractTargets(innerCommand(l.Command), env)
 			}
 			af.jobs = append(af.jobs, aj)
 		}
@@ -446,7 +448,59 @@ func runAudit(r Runner, opts auditOpts) (int, error) {
 		}
 		p.rep = &tr
 	}
+	s.addHistory()
 	return s.report(), nil
+}
+
+// addHistory reads the cron log and the status files and adds a warning to
+// enabled jobs whose last run failed or whose last scheduled run did not start.
+func (s *auditState) addHistory() {
+	homes := map[string]string{}
+	byUser := map[string][]*Line{}
+	jobOf := map[*Line]*auditJob{}
+	for _, af := range s.files {
+		for _, aj := range af.jobs {
+			if aj.line.Kind != KJob {
+				continue
+			}
+			if h, ok := s.passwd[aj.runUser]; ok && h != "" {
+				homes[aj.runUser] = h
+			}
+			byUser[aj.runUser] = append(byUser[aj.runUser], aj.line)
+			jobOf[aj.line] = aj
+		}
+	}
+	if len(byUser) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "Reading the cron log…\n")
+	out, _, _ := s.run(nowScript + logScript("") + stateScript(homes))
+	now, ok := parseNow(out)
+	if !ok {
+		now = time.Now()
+	}
+	runs := parseHostRuns(out, now)
+	s.runsNote = runs.logNote(s.asUser)
+	for u, ls := range byUser {
+		for l, jh := range runs.Histories(u, ls) {
+			aj := jobOf[l]
+			if l.Disabled {
+				continue
+			}
+			last := jh.Last()
+			switch {
+			case last != nil && last.Result == RunFailed && len(jh.Running) == 0:
+				aj.issues = append(aj.issues, Issue{SevWarn, fmt.Sprintf("last run failed with exit status %d (%s, %s)",
+					last.Exit, last.Start.Format("Mon 01-02 15:04"), agoText(last.Start, now)), nil})
+			case jh.MissedLast():
+				m := jh.Missed[len(jh.Missed)-1]
+				aj.issues = append(aj.issues, Issue{SevWarn, fmt.Sprintf("did not start at %s as scheduled (%d missed run(s) in the cron log)",
+					m.Format("Mon 01-02 15:04"), len(jh.Missed)), nil})
+			case s.opts.verbose && last != nil:
+				aj.issues = append(aj.issues, Issue{SevOK, "last run " + last.Start.Format("Mon 01-02 15:04") + " " + jh.strip(20), nil})
+			}
+		}
+	}
 }
 
 // filterNotExec drops the generic "not executable" issue (replaced by the run-parts one).
@@ -574,6 +628,9 @@ func (s *auditState) report() int {
 	}
 	for _, u := range s.unread {
 		fmt.Println(" " + yellow("! cannot read "+u))
+	}
+	if s.runsNote != "" {
+		fmt.Println(dim(" run history: " + s.runsNote))
 	}
 	fmt.Println()
 

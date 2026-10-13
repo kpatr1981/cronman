@@ -103,6 +103,9 @@ type app struct {
 	sel    int
 	off    int
 	status string
+	runs   *hostRuns             // cron log, status files and processes
+	hist   map[*Line]*JobHistory // runs per job
+	histAt time.Time             // when info.Now was read
 }
 
 func runInteractive(r Runner) error {
@@ -115,13 +118,15 @@ func runInteractive(r Runner) error {
 	a.setContent(content)
 	fmt.Fprintf(stderr(), "Checking %d job(s)…\n", len(a.jobs))
 	a.checkAll()
+	fmt.Fprintf(stderr(), "Reading the cron log…\n")
+	a.loadHistory()
 	scr, err := openScreen()
 	if err != nil {
 		return err
 	}
 	a.scr = scr
 	defer scr.close()
-	a.status = "Loaded " + plural(len(a.jobs), "job") + ". Press ? for help."
+	a.status = "Loaded " + plural(len(a.jobs), "job") + ". Press ? for help." + a.histHint()
 	a.loop()
 	return nil
 }
@@ -139,6 +144,7 @@ func (a *app) setContent(content string) {
 	a.jobs = a.ct.Jobs()
 	a.rep = map[*Line]*JobReport{}
 	a.ext = map[*Line]*Extraction{}
+	a.refreshHist()
 	if a.sel >= len(a.jobs) {
 		a.sel = max(0, len(a.jobs)-1)
 	}
@@ -152,7 +158,7 @@ func (a *app) check(jobs []*Line) {
 	var reqs []CheckReq
 	idx := map[string]bool{}
 	for _, l := range jobs {
-		ex := ExtractTargets(l.Command, a.ct.EnvAt(l, a.info.Home))
+		ex := ExtractTargets(innerCommand(l.Command), a.ct.EnvAt(l, a.info.Home))
 		a.ext[l] = ex
 		for _, t := range ex.Targets {
 			rq := reqFor(t)
@@ -221,13 +227,14 @@ func keybar(w int, items [][2]string) []string {
 
 var mainKeys = [][2]string{
 	{"↑↓", "move"}, {"space", "enable/disable"}, {"e", "edit schedule"}, {"c", "edit command"},
-	{"p", "change script path"}, {"D", "delete"}, {"x", "run now"}, {"enter", "details & fixes"}, {"w", "save"}, {"d", "diff"},
+	{"p", "change script path"}, {"D", "delete"}, {"x", "run now"}, {"o", "output"}, {"S", "record result"},
+	{"enter", "details & fixes"}, {"w", "save"}, {"d", "diff"},
 	{"r", "reload"}, {"R", "re-check"}, {"?", "help"}, {"q", "quit"},
 }
 
 func (a *app) titleLine(w int) string {
 	n, off := len(a.jobs), 0
-	fail := 0
+	fail, lastFail, missed := 0, 0, 0
 	for _, l := range a.jobs {
 		if l.Disabled {
 			off++
@@ -235,11 +242,25 @@ func (a *app) titleLine(w int) string {
 		if a.rep[l].Sev() == SevFail && !l.Disabled && !l.Deleted {
 			fail++
 		}
+		if jh := a.hist[l]; jh != nil && !l.Disabled {
+			if r := jh.Last(); r != nil && r.Result == RunFailed && len(jh.Running) == 0 {
+				lastFail++
+			}
+			if jh.MissedLast() {
+				missed++
+			}
+		}
 	}
 	t := inv(bold(" cronman ")) + " " + bold(a.info.User+"@"+hostOf(a.r.Label())) +
 		dim(fmt.Sprintf("  %d jobs, %d disabled", n, off))
 	if fail > 0 {
 		t += "  " + red(fmt.Sprintf("%d failing", fail))
+	}
+	if lastFail > 0 {
+		t += "  " + red(fmt.Sprintf("%d last run failed", lastFail))
+	}
+	if missed > 0 {
+		t += "  " + yellow(fmt.Sprintf("%d missed", missed))
 	}
 	if a.dirty() {
 		t += "  " + yellow("● unsaved changes (w to save)")
@@ -273,7 +294,7 @@ func (a *app) render(promptLines []string) []string {
 			schedW = min(n, 24)
 		}
 	}
-	lines = append(lines, dim(fmt.Sprintf("   %3s  %-5s %-5s %-*s %s", "#", "STATE", "CHECK", schedW, "SCHEDULE", "COMMAND")))
+	lines = append(lines, dim(fmt.Sprintf("   %3s  %-5s %-5s %-12s %-*s %s", "#", "STATE", "CHECK", "LAST", schedW, "SCHEDULE", "COMMAND")))
 	if a.sel < a.off {
 		a.off = a.sel
 	}
@@ -302,10 +323,11 @@ func (a *app) render(promptLines []string) []string {
 		if j == a.sel {
 			mark = cyan("▶ ")
 		}
-		pre := fmt.Sprintf("%s%3d  %s   %s ", mark, j+1, state, padRight(sevLabel(a.rep[l].Sev()), 5))
+		last := padRight(a.hist[l].lastCell(a.now(), a.logOK()), 12)
+		pre := fmt.Sprintf("%s%3d  %s   %s %s ", mark, j+1, state, padRight(sevLabel(a.rep[l].Sev()), 5), last)
 		sched := fmt.Sprintf("%-*s ", schedW, fit(l.Schedule, schedW))
 		rest := w - visibleLen(pre) - len(sched) - 1
-		cmd := fit(l.Command, rest)
+		cmd := fit(displayCmd(l), rest)
 		if l.Modified {
 			sched = yellow(sched)
 		}
@@ -344,6 +366,9 @@ func (a *app) summaryPanel(w int) []string {
 	}
 	if nx := a.nextRuns(l.Schedule, 3); nx != "" {
 		info += " · next: " + nx
+	}
+	if r := a.hist[l].LastWith(RunOK); r != nil {
+		info += " · last success " + agoText(r.Start, a.now())
 	}
 	out = append(out, dim(fit(info, w)))
 	jr := a.rep[l]
@@ -449,6 +474,10 @@ func (a *app) loop() {
 			}
 		case k.Rune == 'x':
 			a.runNow(nil)
+		case k.Rune == 'o':
+			a.showOutput()
+		case k.Rune == 'S':
+			a.toggleRecording()
 		case k.Rune == 'D':
 			a.deleteJob(a.render)
 		case k.Rune == 'w':
@@ -461,7 +490,8 @@ func (a *app) loop() {
 			a.status = "Re-checking…"
 			a.scr.draw(a.render(nil), -1, -1)
 			a.checkAll()
-			a.status = "Checks refreshed."
+			a.loadHistory()
+			a.status = "Checks and run history refreshed." + a.histHint()
 		case k.Rune == '?' || k.Rune == 'h':
 			a.help()
 		case k.Rune == 'q' || k.Name == "ctrl-c" || k.Name == "esc":
@@ -587,17 +617,29 @@ func (a *app) editCommand(base func([]string) []string) {
 	if base == nil {
 		base = a.render
 	}
-	v, ok := a.prompt(base, "Edit command:", l.Command, func(s string) string {
+	// With result recording on, edit the job's own command and keep the wrapper.
+	inner, id, wrapped := UnwrapStatus(l.Command)
+	v, ok := a.prompt(base, "Edit command:", inner, func(s string) string {
 		if strings.TrimSpace(s) == "" {
 			return "command cannot be empty"
 		}
+		if wrapped {
+			if _, err := WrapStatus(strings.TrimSpace(s), id); err != nil {
+				return "result recording: " + err.Error() + " (S turns it off)"
+			}
+		}
 		return ""
 	})
-	if !ok || strings.TrimSpace(v) == l.Command {
+	if !ok || strings.TrimSpace(v) == inner {
 		a.status = "Command unchanged."
 		return
 	}
+	v = strings.TrimSpace(v)
+	if wrapped {
+		v, _ = WrapStatus(v, id)
+	}
 	_ = l.SetCommand(v)
+	a.refreshHist()
 	a.check([]*Line{l})
 	a.status = "Command updated and re-checked: " + sevLabel(a.rep[l].Sev()) + ". Press w to save."
 }
@@ -612,7 +654,7 @@ func (a *app) editPath(base func([]string) []string) {
 	}
 	ex := a.ext[l]
 	if ex == nil {
-		ex = ExtractTargets(l.Command, a.ct.EnvAt(l, a.info.Home))
+		ex = ExtractTargets(innerCommand(l.Command), a.ct.EnvAt(l, a.info.Home))
 	}
 	mt := MainTarget(ex.Targets)
 	if mt == nil {
@@ -688,7 +730,8 @@ func (a *app) reload() {
 	a.info = ri
 	a.setContent(content)
 	a.checkAll()
-	a.status = "Reloaded " + plural(len(a.jobs), "job") + "."
+	a.loadHistory()
+	a.status = "Reloaded " + plural(len(a.jobs), "job") + "." + a.histHint()
 }
 
 // diffLines shows changed and deleted lines (cronman never adds lines).
@@ -810,7 +853,7 @@ func writeCrontab(r Runner, orig, newContent string) (backup, verify string, err
 d="$HOME/.cronman_backups"
 b="$d/crontab.$(date +%Y%m%d-%H%M%S)"
 mkdir -p "$d" && crontab -l > "$b" 2>/dev/null && echo "@@BACKUP $b"
-ls -1t "$d"/crontab.* 2>/dev/null | tail -n +21 | while IFS= read -r f; do rm -f "$f"; done
+` + statusMkdir(newContent) + `ls -1t "$d"/crontab.* 2>/dev/null | tail -n +21 | while IFS= read -r f; do rm -f "$f"; done
 crontab - ` + hs + "\n" + body + `echo "@@RC $?"
 `
 	out, stderr, err := RunScript(r, "", script)
@@ -833,6 +876,14 @@ crontab - ` + hs + "\n" + body + `echo "@@RC $?"
 	return backup, verify, nil
 }
 
+// statusMkdir creates the status directory when a job records its result.
+func statusMkdir(content string) string {
+	if !strings.Contains(content, "/"+statusDir+"/") {
+		return ""
+	}
+	return `mkdir -p "$HOME/` + statusDir + `"` + "\n"
+}
+
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
 
 func (a *app) help() {
@@ -847,6 +898,8 @@ func (a *app) help() {
 		"   " + key("p") + "               change only the script/executable path in the command",
 		"   " + key("D") + "               delete the job (asks first; D again keeps it; written on w)",
 		"   " + key("x") + "               run the job now, as cron would (asks first; foreground or background)",
+		"   " + key("o") + "               show the job's latest output (its log file, cron mail, or cronie's logged output)",
+		"   " + key("S") + "               record each run's exit status (wraps the command; S again removes it)",
 		"   " + key("enter") + "           details: every file the job uses, problems and proposed fixes",
 		"   " + key("w") + "               save to the host (shows a diff, backs up the old crontab first)",
 		"   " + key("d") + "               show pending changes",
@@ -865,6 +918,12 @@ func (a *app) help() {
 		"   " + yellow("WARN") + " will probably run but something is off (e.g. CRLF line endings, no #! line)",
 		"   " + red("FAIL") + " cron will fail to run it (missing file, no execute/read permission, bad interpreter…)",
 		"   " + dim("?") + "    could not be checked (path built from variables or $(...))",
+		"",
+		bold(" LAST column (from the cron log, and from ~/" + statusDir + " for jobs with S)"),
+		"   " + green("✓ 3h") + " last run worked   " + red("✗ 3h rc=1") + " failed   • 3h ran (the log does not say how it ended)",
+		"   " + cyan("▶ running") + " running now   " + yellow("MISSED") + " the last scheduled run did not start   " + dim("never") + " no run in the log",
+		"   " + dim("?") + " the cron log cannot be read as " + a.info.User + " (cronman tries sudo -n; S records results without it)",
+		"   Only Debian cron logs exit status, with -L 5 or -L 15 in /etc/default/cron. S works everywhere.",
 		"",
 		bold(" Running a job now (x)"),
 		"   Runs as " + a.info.User + " with cron's environment: env cleared, crontab variables, $SHELL -c,",
@@ -909,10 +968,16 @@ func (a *app) detailLines(w int) ([]string, []numberedFix) {
 	if nx := a.nextRuns(l.Schedule, 5); nx != "" {
 		out = append(out, " "+bold("next runs")+" "+nx+dim("  (host time)"))
 	}
-	out = append(out, wrapPrefixed(" "+bold("command  ")+" ", "            ", l.Command, w)...)
-	if strings.Contains(l.Command, "%") && CronShellPart(l.Command) != l.Command {
+	inner, _, wrapped := UnwrapStatus(l.Command)
+	out = append(out, wrapPrefixed(" "+bold("command  ")+" ", "            ", inner, w)...)
+	if wrapped {
+		out = append(out, dim("            result recording is on: each run's exit status goes to ~/"+statusDir+" (S removes it)"))
+	}
+	if strings.Contains(inner, "%") && CronShellPart(inner) != inner {
 		out = append(out, dim("            note: text after an unescaped % is passed to the command as stdin"))
 	}
+	out = append(out, "")
+	out = append(out, a.hist[l].historyLines(a.now(), a.runs.logNote(a.info.User))...)
 	out = append(out, "")
 	jr := a.rep[l]
 	if jr == nil || len(jr.Targets) == 0 {
@@ -1001,7 +1066,8 @@ func lastSpace(r []rune) int {
 
 var detailKeys = [][2]string{
 	{"1-9", "apply fix"}, {"space", "enable/disable"}, {"e", "schedule"}, {"c", "command"},
-	{"p", "path"}, {"x", "run now"}, {"D", "delete"}, {"R", "re-check"}, {"↑↓", "scroll"}, {"esc/q", "back"},
+	{"p", "path"}, {"x", "run now"}, {"o", "output"}, {"S", "record result"}, {"D", "delete"}, {"R", "re-check"},
+	{"↑↓", "scroll"}, {"esc/q", "back"},
 }
 
 func (a *app) details() {
@@ -1058,6 +1124,10 @@ func (a *app) details() {
 			a.editPath(base)
 		case k.Rune == 'x':
 			a.runNow(base)
+		case k.Rune == 'o':
+			a.showOutput()
+		case k.Rune == 'S':
+			a.toggleRecording()
 		case k.Rune == 'D':
 			a.deleteJob(base)
 		case k.Rune == 'R':

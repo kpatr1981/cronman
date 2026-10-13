@@ -12,7 +12,7 @@ cronman [options] host1,host2,…          # edit a job on several hosts at once
 ## Interactive mode
 
 `cronman alice@web1` logs in as `alice`, lists every job in her crontab (active and
-commented-out) with a check status, and lets you:
+commented-out) with a check status and when it last ran, and lets you:
 
 | key | action |
 |---|---|
@@ -23,6 +23,8 @@ commented-out) with a check status, and lets you:
 | `p` | change only the script/executable path |
 | `D` | delete the job (asks first; `D` again keeps it; removed when you save) |
 | `x` | run the job now, as cron would (asks first; see below) |
+| `o` | show the job's latest output: its log file, the last cron mail about it, or the output cronie logged |
+| `S` | record each run's exit status (wraps the command; `S` again removes it; see below) |
 | `enter` | details: every file the job uses, problems, numbered fixes |
 | `1-9` (details) | apply a proposed fix (asks first) |
 | `w` | save (shows a diff, refuses if the crontab changed meanwhile, backs up to `~/.cronman_backups/`) |
@@ -66,6 +68,44 @@ quickest way to reproduce a "works in my shell, fails in cron" problem.
 
 It runs what is on screen, so unsaved edits and disabled jobs can be tried before saving.
 
+### Last run (LAST column)
+
+The LAST column shows the newest run of each job and how it went. The details screen
+(`enter`) adds the last success, the last failure, how long runs took, the recent runs as
+`✓✗•` (oldest first) and any missed runs.
+
+| LAST | meaning |
+|---|---|
+| `✓ 3h` | the last run worked (3 hours ago) |
+| `✗ 3h rc=1` | the last run failed with exit status 1 |
+| `• 3h` | it ran, but the log does not say how it ended |
+| `▶ running` | a run is going on now (`$SHELL -c <command>` process) |
+| `MISSED` | the last scheduled start has no run in the log (cron down, host asleep, …) |
+| `never` | no run in the log |
+| `?` | the cron log can't be read and the job does not record its result |
+
+Where it comes from:
+
+* **The cron log**, read-only: `/var/log/cron`, `/var/log/syslog`, `/var/log/messages`,
+  the journal or busybox `logread`. If the log can't be read as the login user, cronman
+  tries `sudo -n` (passwordless sudo only, no prompt). Every cron logs when a job starts,
+  but only Debian/Ubuntu cron logs failures, and only when it runs with `-L 5` or `-L 15`
+  (`EXTRA_OPTS` in `/etc/default/cron`). Cronie logs the end of a run and, with `-s`, its
+  output, but not the exit status. Busybox logs only the start. The window is what the log
+  holds now (the journal: 8 days), so a weekly job may show `never` after the log is rotated.
+* **Result recording** (`S`), for exact exit codes on any cron. It changes the line to
+  ```
+  cronman_t=$(date +\%s); <command>; cronman_rc=$?; echo "$cronman_t $(date +\%s) $cronman_rc" 2>/dev/null >>"$HOME/.cronman/status/<id>"; exit $cronman_rc
+  ```
+  It keeps the job's exit status, keeps text after `%` as stdin, and is shown as `[rec]`
+  with the wrapper hidden. `c` edits the command inside it, and the checks and multi-host
+  matching ignore it. Each run appends one line; cronman cuts files over 2000 lines down
+  to the last 1000 when it reads them. Commands that end in `&`, contain a `#` comment, or
+  end with `exit`/`exec` can't be recorded (the first two are refused).
+
+MISSED only counts scheduled starts after the job's first run in the log, so a job added
+or rescheduled recently is not flagged for times before that.
+
 ### Commented-out jobs vs comments
 
 `#`, `##`, `#   ` … followed by a valid schedule and a command is a **disabled job**
@@ -90,7 +130,9 @@ interpreters such as `bash script.sh`) is on **every** host.
 * `D` deletes the job on every host. It first shows each host's line and asks; `D` again
   keeps it. To delete a job on only some hosts, open those hosts on their own.
 * The panel under the list shows the selected job as it is on each host, with its check
-  result there.
+  result and last run there. The LAST column shows the worst host: `✗ 2/3` means the last
+  run failed on 2 of 3 hosts, and `MISSED 1/3` means a scheduled run didn't start on one.
+* `S` turns result recording on for every host (or off, when every host has it).
 * `w` shows one diff for all hosts and asks once. Each host is then backed up and written,
   using the same changed-meanwhile guard as single-host mode. A host that changed since it
   was loaded, or that fails, is skipped and keeps your edits; the others are saved. A
@@ -111,6 +153,8 @@ each job **as the user it runs as**. Also reported:
 * `cron.d` files and run-parts scripts with a `.` in the name (silently ignored on Debian/Ubuntu)
 * run-parts scripts without the execute bit
 * users blocked by `cron.allow` / `cron.deny`; cron daemon not running
+* jobs whose last run failed, or whose last scheduled run did not start (from the cron log
+  and from result recording, as warnings; `-v` shows every job's recent runs)
 
 Only problems are printed (`-v` lists everything). `--fix` offers to run each fix.
 Exit status: 0 = no failing jobs, 1 = failing jobs, 2 = error.

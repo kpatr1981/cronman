@@ -13,7 +13,7 @@ import (
 	"strings"
 )
 
-var version = "1.2.0"
+var version = "1.3.0"
 
 const (
 	author  = "Konstantinos Patronas <kpatronas@gmail.com>"
@@ -40,7 +40,8 @@ Usage:
 
 Interactive keys (also shown on screen):
   ↑/↓ move   space enable/disable   e schedule   c command   p script path   D delete
-  x run now   enter details & fixes   w save   d diff   r reload   ? help   q quit
+  x run now   o output   S record result   enter details & fixes   w save   d diff
+  r reload   ? help   q quit
 
 Options:
 `, version)
