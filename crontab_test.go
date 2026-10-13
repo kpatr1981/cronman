@@ -213,3 +213,25 @@ func TestCronStdin(t *testing.T) {
 		t.Fatalf("got %q %v", got, has)
 	}
 }
+
+func TestDeleteKeepsOthers(t *testing.T) {
+	in := "MAILTO=\"\"\n# note\n0 1 * * * /a.sh\n#0 2 * * * /b.sh\n0 3 * * * /c.sh\n"
+	c := ParseCrontab(in, false)
+	jobs := c.Jobs()
+	jobs[1].SetDeleted(true)
+	want := "MAILTO=\"\"\n# note\n0 1 * * * /a.sh\n0 3 * * * /c.sh\n"
+	if got := c.Render(); got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if len(c.Jobs()) != 3 {
+		t.Errorf("a deleted job stays listed until saved")
+	}
+	jobs[1].SetDeleted(false)
+	if got := c.Render(); got != in {
+		t.Fatalf("undo: got %q want %q", got, in)
+	}
+	jobs[2].SetDeleted(true)
+	if got := c.Render(); got != "MAILTO=\"\"\n# note\n0 1 * * * /a.sh\n#0 2 * * * /b.sh\n" {
+		t.Fatalf("last line: got %q", got)
+	}
+}

@@ -39,7 +39,7 @@ Usage:
                                            cronman host1 host2 … or --hosts-file FILE
 
 Interactive keys (also shown on screen):
-  ↑/↓ move   space enable/disable   e schedule   c command   p script path
+  ↑/↓ move   space enable/disable   e schedule   c command   p script path   D delete
   x run now   enter details & fixes   w save   d diff   r reload   ? help   q quit
 
 Options:

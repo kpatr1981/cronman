@@ -21,6 +21,7 @@ commented-out) with a check status, and lets you:
 | `e` | edit the schedule (validated, shows the next run times) |
 | `c` | edit the whole command |
 | `p` | change only the script/executable path |
+| `D` | delete the job (asks first; `D` again keeps it; removed when you save) |
 | `x` | run the job now, as cron would (asks first; see below) |
 | `enter` | details: every file the job uses, problems, numbered fixes |
 | `1-9` (details) | apply a proposed fix (asks first) |
@@ -86,6 +87,8 @@ interpreters such as `bash script.sh`) is on **every** host.
   everywhere). `e` sets the schedule and `p` changes the script path on every host, and
   each host keeps its own arguments. `c` edits the whole command only when it is the same
   on every host. STATE `MIX` means the job is on for some hosts and off for others.
+* `D` deletes the job on every host. It first shows each host's line and asks; `D` again
+  keeps it. To delete a job on only some hosts, open those hosts on their own.
 * The panel under the list shows the selected job as it is on each host, with its check
   result there.
 * `w` shows one diff for all hosts and asks once. Each host is then backed up and written,

@@ -198,6 +198,16 @@ func (m *multiApp) current() *mrow {
 	return m.rows[m.sel]
 }
 
+// live returns the selected row unless it is marked for deletion.
+func (m *multiApp) live() *mrow {
+	r := m.current()
+	if r != nil && r.deleted() {
+		m.status = fmt.Sprintf("Job %d is marked for deletion; press D to keep it.", m.sel+1)
+		return nil
+	}
+	return r
+}
+
 func (m *multiApp) dirty() bool {
 	for _, h := range m.hosts {
 		if h.dirty() {
@@ -229,6 +239,9 @@ func (r *mrow) common(f func(*Line) string) (string, bool) {
 }
 
 func (r *mrow) state() string {
+	if r.deleted() {
+		return red("DEL")
+	}
 	on := 0
 	for _, l := range r.lines {
 		if !l.Disabled {
@@ -254,9 +267,18 @@ func (m *multiApp) rowSev(r *mrow) Severity {
 	return s
 }
 
+func (r *mrow) deleted() bool {
+	for _, l := range r.lines {
+		if !l.Deleted {
+			return false
+		}
+	}
+	return true
+}
+
 func (r *mrow) modified() bool {
 	for _, l := range r.lines {
-		if l.Modified {
+		if l.Modified || l.Deleted {
 			return true
 		}
 	}
@@ -267,7 +289,7 @@ func (r *mrow) modified() bool {
 
 var multiKeys = [][2]string{
 	{"↑↓", "move"}, {"space", "enable/disable"}, {"e", "edit schedule"}, {"c", "edit command"},
-	{"p", "change script path"}, {"w", "save"}, {"d", "diff"},
+	{"p", "change script path"}, {"D", "delete"}, {"w", "save"}, {"d", "diff"},
 	{"r", "reload"}, {"R", "re-check"}, {"?", "help"}, {"q", "quit"},
 }
 
@@ -281,7 +303,7 @@ func (m *multiApp) titleLine() string {
 		dim(fmt.Sprintf("  %s on all %d hosts", plural(len(m.rows), "job"), len(m.hosts)))
 	fail := 0
 	for _, r := range m.rows {
-		if m.rowSev(r) == SevFail {
+		if m.rowSev(r) == SevFail && !r.deleted() {
 			fail++
 		}
 	}
@@ -347,8 +369,11 @@ func (m *multiApp) render(promptLines []string) []string {
 			sched = yellow(sched)
 		}
 		body := sched + cmd
-		if j == m.sel {
+		switch {
+		case j == m.sel:
 			body = bold(body)
+		case r.deleted():
+			body = dim(body)
 		}
 		lines = append(lines, pre+body)
 	}
@@ -396,6 +421,9 @@ func (m *multiApp) hostPanel(w int) []string {
 		state := green("ON ")
 		if l.Disabled {
 			state = dim("OFF")
+		}
+		if l.Deleted {
+			state = red("DEL")
 		}
 		line := fmt.Sprintf(" %-*s %s %s %s  %s", nameW, fit(hostOf(h.r.Label()), nameW), state,
 			padRight(sevLabel(h.rep[l].Sev()), 5), l.Schedule, l.Command)
@@ -446,6 +474,8 @@ func (m *multiApp) loop() {
 			m.editCommand()
 		case k.Rune == 'p' || k.Rune == 'f':
 			m.editPath()
+		case k.Rune == 'D':
+			m.deleteRow()
 		case k.Rune == 'x' || k.Name == "enter":
 			m.status = "Run-now and fixes work on one host: run cronman with just that host."
 		case k.Rune == 'w':
@@ -470,7 +500,7 @@ func (m *multiApp) loop() {
 }
 
 func (m *multiApp) toggle() {
-	r := m.current()
+	r := m.live()
 	if r == nil {
 		return
 	}
@@ -492,8 +522,39 @@ func (m *multiApp) toggle() {
 	}
 }
 
-func (m *multiApp) editSchedule() {
+// deleteRow marks the job for deletion on every host (after showing each
+// host's line and asking), or keeps a job that is already marked.
+func (m *multiApp) deleteRow() {
 	r := m.current()
+	if r == nil {
+		return
+	}
+	if r.deleted() {
+		for _, l := range r.lines {
+			l.SetDeleted(false)
+		}
+		m.status = fmt.Sprintf("Job %d kept on all hosts.", m.sel+1)
+		return
+	}
+	var d []string
+	for i, l := range r.lines {
+		h := m.hosts[i]
+		d = append(d, bold(" "+h.info.User+"@"+hostOf(h.r.Label()))+dim(fmt.Sprintf("  line %d", l.Num)))
+		d = append(d, red(" - "+l.Raw), "")
+	}
+	q := fmt.Sprintf("Delete this job on all %d hosts? (written when you press w)", len(m.hosts))
+	if !m.page(fmt.Sprintf(" Delete job %d ", m.sel+1), d, true, q, "") {
+		m.status = "Not deleted."
+		return
+	}
+	for _, l := range r.lines {
+		l.SetDeleted(true)
+	}
+	m.status = fmt.Sprintf("Job %d marked for deletion on all %d hosts (press w to save, D to keep it).", m.sel+1, len(m.hosts))
+}
+
+func (m *multiApp) editSchedule() {
+	r := m.live()
 	if r == nil {
 		return
 	}
@@ -530,7 +591,7 @@ func (m *multiApp) editSchedule() {
 }
 
 func (m *multiApp) editCommand() {
-	r := m.current()
+	r := m.live()
 	if r == nil {
 		return
 	}
@@ -556,7 +617,7 @@ func (m *multiApp) editCommand() {
 }
 
 func (m *multiApp) editPath() {
-	r := m.current()
+	r := m.live()
 	if r == nil {
 		return
 	}
@@ -680,7 +741,7 @@ func (m *multiApp) page(title string, d []string, confirm bool, question, empty 
 			lines = append(lines, "")
 		}
 		if confirm {
-			lines = append(lines, " "+bold(question), " "+key("y")+" save   "+key("n/esc")+" cancel   "+key("↑↓")+" scroll")
+			lines = append(lines, " "+bold(question), " "+key("y")+" yes   "+key("n/esc")+" cancel   "+key("↑↓")+" scroll")
 		} else {
 			lines = append(lines, "", " "+key("↑↓")+" scroll   "+key("esc/q")+" back")
 		}
@@ -754,7 +815,7 @@ func (m *multiApp) save() bool {
 	m.checkAll()
 	for _, r := range m.rows {
 		for i, l := range r.lines {
-			if m.hosts[i].rep[l].Sev() == SevFail && !l.Disabled {
+			if m.hosts[i].rep[l].Sev() == SevFail && !l.Disabled && !l.Deleted {
 				report = append(report, " "+red("FAIL")+"    "+hostOf(m.hosts[i].r.Label())+": "+fit(l.Command, 60)+" — its checks fail there")
 			}
 		}
@@ -780,11 +841,12 @@ func (m *multiApp) help() {
 		"   " + key("e") + "               set the schedule on every host",
 		"   " + key("c") + "               edit the whole command (only when it is the same on every host)",
 		"   " + key("p") + "               change the script/executable path on every host",
+		"   " + key("D") + "               delete the job on every host (shows each host's line, asks first; D again keeps it)",
 		"   " + key("w") + "               save: one diff for all hosts, then each host is backed up and written",
 		"   " + key("d") + "               show pending changes     " + key("r") + "  reload all     " + key("R") + "  re-check",
 		"   " + key("q  esc") + "          quit (asks if there are unsaved changes)",
 		"",
-		" STATE " + yellow("MIX") + " means the job is on for some hosts and off for others.",
+		" STATE " + yellow("MIX") + " means the job is on for some hosts and off for others; " + red("DEL") + " is deleted on save.",
 		" A host whose crontab changed since it was loaded is skipped on save; the others are saved.",
 	}
 	if len(m.skipped) > 0 {

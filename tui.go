@@ -185,6 +185,16 @@ func (a *app) current() *Line {
 	return a.jobs[a.sel]
 }
 
+// live returns the selected job unless it is marked for deletion.
+func (a *app) live() *Line {
+	l := a.current()
+	if l != nil && l.Deleted {
+		a.status = "Job " + fmt.Sprint(a.sel+1) + " is marked for deletion; press D to keep it."
+		return nil
+	}
+	return l
+}
+
 // ---- rendering -------------------------------------------------------------
 
 func key(k string) string { return bold(cyan(k)) }
@@ -211,7 +221,7 @@ func keybar(w int, items [][2]string) []string {
 
 var mainKeys = [][2]string{
 	{"↑↓", "move"}, {"space", "enable/disable"}, {"e", "edit schedule"}, {"c", "edit command"},
-	{"p", "change script path"}, {"x", "run now"}, {"enter", "details & fixes"}, {"w", "save"}, {"d", "diff"},
+	{"p", "change script path"}, {"D", "delete"}, {"x", "run now"}, {"enter", "details & fixes"}, {"w", "save"}, {"d", "diff"},
 	{"r", "reload"}, {"R", "re-check"}, {"?", "help"}, {"q", "quit"},
 }
 
@@ -222,7 +232,7 @@ func (a *app) titleLine(w int) string {
 		if l.Disabled {
 			off++
 		}
-		if a.rep[l].Sev() == SevFail && !l.Disabled {
+		if a.rep[l].Sev() == SevFail && !l.Disabled && !l.Deleted {
 			fail++
 		}
 	}
@@ -285,6 +295,9 @@ func (a *app) render(promptLines []string) []string {
 		if l.Disabled {
 			state = dim("OFF")
 		}
+		if l.Deleted {
+			state = red("DEL")
+		}
 		mark := "  "
 		if j == a.sel {
 			mark = cyan("▶ ")
@@ -300,7 +313,7 @@ func (a *app) render(promptLines []string) []string {
 		switch {
 		case j == a.sel:
 			body = bold(body)
-		case l.Disabled:
+		case l.Disabled || l.Deleted:
 			body = dim(body)
 		}
 		lines = append(lines, pre+body)
@@ -436,6 +449,8 @@ func (a *app) loop() {
 			}
 		case k.Rune == 'x':
 			a.runNow(nil)
+		case k.Rune == 'D':
+			a.deleteJob(a.render)
 		case k.Rune == 'w':
 			a.save()
 		case k.Rune == 'd':
@@ -458,7 +473,7 @@ func (a *app) loop() {
 }
 
 func (a *app) toggle() {
-	l := a.current()
+	l := a.live()
 	if l == nil {
 		return
 	}
@@ -471,6 +486,27 @@ func (a *app) toggle() {
 			a.status += " " + red("Warning: its checks are failing.")
 		}
 	}
+}
+
+// deleteJob marks the selected job for deletion (after asking), or keeps a
+// job that is already marked.
+func (a *app) deleteJob(base func([]string) []string) {
+	l := a.current()
+	if l == nil {
+		return
+	}
+	if l.Deleted {
+		l.SetDeleted(false)
+		a.status = fmt.Sprintf("Job %d kept.", a.sel+1)
+		return
+	}
+	q := fmt.Sprintf("Delete job %d?  %s %s", a.sel+1, l.Schedule, l.Command)
+	if k := a.ask(base, fit(q, 200), "y = delete (written on w)   any other key = no"); k != 'y' && k != 'Y' {
+		a.status = "Not deleted."
+		return
+	}
+	l.SetDeleted(true)
+	a.status = fmt.Sprintf("Job %d marked for deletion (press w to save, D to keep it).", a.sel+1)
 }
 
 // prompt edits a value on the bottom lines. base renders the screen behind it.
@@ -511,7 +547,7 @@ func (a *app) prompt(base func([]string) []string, label, initial string, valida
 }
 
 func (a *app) editSchedule(base func([]string) []string) {
-	l := a.current()
+	l := a.live()
 	if l == nil {
 		return
 	}
@@ -544,7 +580,7 @@ func (a *app) editSchedule(base func([]string) []string) {
 }
 
 func (a *app) editCommand(base func([]string) []string) {
-	l := a.current()
+	l := a.live()
 	if l == nil {
 		return
 	}
@@ -567,7 +603,7 @@ func (a *app) editCommand(base func([]string) []string) {
 }
 
 func (a *app) editPath(base func([]string) []string) {
-	l := a.current()
+	l := a.live()
 	if l == nil {
 		return
 	}
@@ -655,10 +691,15 @@ func (a *app) reload() {
 	a.status = "Reloaded " + plural(len(a.jobs), "job") + "."
 }
 
-// diffLines shows changed lines (line count never changes in cronman).
+// diffLines shows changed and deleted lines (cronman never adds lines).
 func (a *app) diffLines() []string {
 	var out []string
 	for _, l := range a.ct.Lines {
+		if l.Deleted {
+			out = append(out, dim(fmt.Sprintf(" line %d (deleted):", l.Num)))
+			out = append(out, red(" - "+l.Raw))
+			continue
+		}
 		if r := l.Render(); r != l.Raw {
 			out = append(out, dim(fmt.Sprintf(" line %d:", l.Num)))
 			out = append(out, red(" - "+l.Raw))
@@ -804,6 +845,7 @@ func (a *app) help() {
 		"   " + key("e") + "               edit the schedule (validated; shows the next run times)",
 		"   " + key("c") + "               edit the whole command",
 		"   " + key("p") + "               change only the script/executable path in the command",
+		"   " + key("D") + "               delete the job (asks first; D again keeps it; written on w)",
 		"   " + key("x") + "               run the job now, as cron would (asks first; foreground or background)",
 		"   " + key("enter") + "           details: every file the job uses, problems and proposed fixes",
 		"   " + key("w") + "               save to the host (shows a diff, backs up the old crontab first)",
@@ -813,7 +855,7 @@ func (a *app) help() {
 		"",
 		bold(" Details screen"),
 		"   " + key("1-9") + "             apply proposed fix N (asks first; sudo fixes prompt for your password)",
-		"   " + key("space e c p x") + "   same as in the list     " + key("esc  q  ←") + "  back",
+		"   " + key("space e c p x D") + " same as in the list     " + key("esc  q  ←") + "  back",
 		"",
 		bold(" Editing a value"),
 		"   " + key("enter") + " accept   " + key("esc") + " cancel   " + key("← → home end") + " move   " + key("ctrl-u") + " clear   " + key("ctrl-w") + " delete word",
@@ -853,6 +895,9 @@ func (a *app) detailLines(w int) ([]string, []numberedFix) {
 	state := green("ENABLED")
 	if l.Disabled {
 		state = dim("DISABLED (commented out)")
+	}
+	if l.Deleted {
+		state = red("MARKED FOR DELETION (D keeps it)")
 	}
 	out = append(out, inv(bold(fmt.Sprintf(" Job %d ", a.sel+1)))+" "+state+dim(fmt.Sprintf("   crontab line %d", l.Num)))
 	out = append(out, "")
@@ -956,7 +1001,7 @@ func lastSpace(r []rune) int {
 
 var detailKeys = [][2]string{
 	{"1-9", "apply fix"}, {"space", "enable/disable"}, {"e", "schedule"}, {"c", "command"},
-	{"p", "path"}, {"x", "run now"}, {"R", "re-check"}, {"↑↓", "scroll"}, {"esc/q", "back"},
+	{"p", "path"}, {"x", "run now"}, {"D", "delete"}, {"R", "re-check"}, {"↑↓", "scroll"}, {"esc/q", "back"},
 }
 
 func (a *app) details() {
@@ -1013,6 +1058,8 @@ func (a *app) details() {
 			a.editPath(base)
 		case k.Rune == 'x':
 			a.runNow(base)
+		case k.Rune == 'D':
+			a.deleteJob(base)
 		case k.Rune == 'R':
 			a.check([]*Line{l})
 			a.status = "Re-checked."

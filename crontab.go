@@ -35,6 +35,7 @@ type Line struct {
 	EnvValue string
 	Err      string
 	Modified bool
+	Deleted  bool // removed from the crontab on the next save
 
 	origDisabled bool
 	origPrefix   string
@@ -386,6 +387,9 @@ func (l *Line) SetDisabled(d bool) {
 	l.Modified = true
 }
 
+// SetDeleted marks a job to be removed on the next save, or keeps it again.
+func (l *Line) SetDeleted(d bool) { l.Deleted = d }
+
 // SetSchedule replaces the schedule, keeping the command.
 func (l *Line) SetSchedule(s string) error {
 	s = strings.Join(wsRe.Split(strings.TrimSpace(s), -1), " ")
@@ -436,6 +440,9 @@ func (l *Line) Render() string {
 func (c *Crontab) Render() string {
 	var b strings.Builder
 	for _, l := range c.Lines {
+		if l.Deleted {
+			continue
+		}
 		b.WriteString(l.Render())
 		b.WriteByte('\n')
 	}

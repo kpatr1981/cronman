@@ -89,7 +89,7 @@ echo "@@LOG $log"
 
 // runNow runs the selected job immediately, after confirmation.
 func (a *app) runNow(base func([]string) []string) {
-	l := a.current()
+	l := a.live()
 	if l == nil {
 		return
 	}
