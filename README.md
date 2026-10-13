@@ -6,6 +6,7 @@ Manage and audit cron jobs on remote hosts over SSH.
 cronman [options] [user@]host           # interactive editor for that user's crontab
 cronman --audit [options] [user@]host   # check every user's cron jobs (needs root or sudo)
 cronman --local [--audit]                # this machine instead of SSH (macOS/Linux)
+cronman [options] host1,host2,…          # edit a job on several hosts at once
 ```
 
 ## Interactive mode
@@ -69,6 +70,32 @@ It runs what is on screen, so unsaved edits and disabled jobs can be tried befor
 `#`, `##`, `#   ` … followed by a valid schedule and a command is a **disabled job**
 (enabling it removes the whole prefix). Prose such as `## test this later`, `# m h dom mon dow command`,
 and the example lines in Debian/Ubuntu crontab headers stay comments.
+
+## Several hosts at once
+
+`cronman web1,web2,web3` (or `cronman web1 web2 web3`, or `--hosts-file FILE` with one
+host per line and `#` comments) loads every host's crontab and lists only the jobs whose
+**command path** (the script or executable the job runs, after `VAR=x` prefixes and
+interpreters such as `bash script.sh`) is on **every** host.
+
+* Jobs whose whole command is the same everywhere pair up first. The rest pair on the path,
+  so `/opt/backup.sh --full` on one host and `/opt/backup.sh --fast` on another are one row.
+* A path that appears in more than one job on a host is not listed, because cronman
+  won't guess which job you mean. `?` lists those paths. Edit those hosts one at a time.
+* `space` comments the job out on every host (or enables it everywhere when it is off
+  everywhere). `e` sets the schedule and `p` changes the script path on every host, and
+  each host keeps its own arguments. `c` edits the whole command only when it is the same
+  on every host. STATE `MIX` means the job is on for some hosts and off for others.
+* The panel under the list shows the selected job as it is on each host, with its check
+  result there.
+* `w` shows one diff for all hosts and asks once. Each host is then backed up and written,
+  using the same changed-meanwhile guard as single-host mode. A host that changed since it
+  was loaded, or that fails, is skipped and keeps your edits; the others are saved. A
+  results screen shows each host's outcome and any check that now fails.
+* Run-now (`x`) and the fixes screen work on one host at a time.
+
+Hosts are loaded one after another, so password and passphrase prompts don't overlap.
+A host that can't be reached is skipped with a warning.
 
 ## Audit mode
 

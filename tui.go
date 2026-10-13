@@ -3,6 +3,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -724,43 +725,17 @@ func (a *app) save() bool {
 	}
 	a.status = "Saving…"
 	a.scr.draw(a.render(nil), -1, -1)
-	_, current, err := loadRemote(a.r)
-	if err != nil {
-		a.status = red("save failed: " + err.Error())
-		return false
-	}
-	if normalizeCrontab(current) != normalizeCrontab(a.orig) {
+	backup, verify, err := writeCrontab(a.r, a.orig, a.ct.Render())
+	switch {
+	case err == errChangedMeanwhile:
 		a.status = red("Not saved: the crontab was changed on the host since it was loaded. Press r to reload (your edits will be lost).")
 		return false
-	}
-	newContent := a.ct.Render()
-	hs, body := heredoc(newContent)
-	script := `umask 077
-d="$HOME/.cronman_backups"
-b="$d/crontab.$(date +%Y%m%d-%H%M%S)"
-mkdir -p "$d" && crontab -l > "$b" 2>/dev/null && echo "@@BACKUP $b"
-ls -1t "$d"/crontab.* 2>/dev/null | tail -n +21 | while IFS= read -r f; do rm -f "$f"; done
-crontab - ` + hs + "\n" + body + `echo "@@RC $?"
-`
-	out, stderr, err := RunScript(a.r, "", script)
-	if !strings.Contains(out, "@@RC 0") {
-		msg := strings.TrimSpace(stderr)
-		if msg == "" && err != nil {
-			msg = err.Error()
-		}
-		a.status = red("crontab rejected the change: " + oneLine(msg))
-		return false
-	}
-	backup := ""
-	for _, l := range strings.Split(out, "\n") {
-		if strings.HasPrefix(l, "@@BACKUP ") {
-			backup = strings.TrimPrefix(l, "@@BACKUP ")
-		}
-	}
-	_, verify, err := loadRemote(a.r)
-	if err != nil || normalizeCrontab(verify) != newContent {
+	case err == errReadBack:
 		a.status = yellow("Saved, but the read-back differs from what was written; press r to reload.")
 		return true
+	case err != nil:
+		a.status = red(err.Error())
+		return false
 	}
 	sel := a.sel
 	a.setContent(verify)
@@ -771,6 +746,50 @@ crontab - ` + hs + "\n" + body + `echo "@@RC $?"
 		a.status += " Previous crontab backed up to " + backup
 	}
 	return true
+}
+
+var (
+	errChangedMeanwhile = errors.New("the crontab was changed on the host since it was loaded")
+	errReadBack         = errors.New("saved, but the read-back differs from what was written")
+)
+
+// writeCrontab installs newContent on r if the host still has orig. It backs up
+// the current crontab first and reads the result back. It returns the backup
+// path and the crontab as read back.
+func writeCrontab(r Runner, orig, newContent string) (backup, verify string, err error) {
+	_, current, err := loadRemote(r)
+	if err != nil {
+		return "", "", fmt.Errorf("save failed: %v", err)
+	}
+	if normalizeCrontab(current) != normalizeCrontab(orig) {
+		return "", "", errChangedMeanwhile
+	}
+	hs, body := heredoc(newContent)
+	script := `umask 077
+d="$HOME/.cronman_backups"
+b="$d/crontab.$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$d" && crontab -l > "$b" 2>/dev/null && echo "@@BACKUP $b"
+ls -1t "$d"/crontab.* 2>/dev/null | tail -n +21 | while IFS= read -r f; do rm -f "$f"; done
+crontab - ` + hs + "\n" + body + `echo "@@RC $?"
+`
+	out, stderr, err := RunScript(r, "", script)
+	if !strings.Contains(out, "@@RC 0") {
+		msg := strings.TrimSpace(stderr)
+		if msg == "" && err != nil {
+			msg = err.Error()
+		}
+		return "", "", fmt.Errorf("crontab rejected the change: %s", oneLine(msg))
+	}
+	for _, l := range strings.Split(out, "\n") {
+		if strings.HasPrefix(l, "@@BACKUP ") {
+			backup = strings.TrimPrefix(l, "@@BACKUP ")
+		}
+	}
+	_, verify, err = loadRemote(r)
+	if err != nil || normalizeCrontab(verify) != newContent {
+		return backup, verify, errReadBack
+	}
+	return backup, verify, nil
 }
 
 func oneLine(s string) string { return strings.Join(strings.Fields(s), " ") }
